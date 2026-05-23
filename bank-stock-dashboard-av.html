@@ -179,7 +179,7 @@ header{display:flex;justify-content:space-between;align-items:flex-start;flex-wr
     </div>
     <div class="key-row">
       <input class="key-input" id="keyInput" type="text" placeholder="e.g. A1B2C3D4E5F6G7H8" autocomplete="off" spellcheck="false">
-      <button class="connect-btn" onclick="connect()">Connect</button>
+      <button class="connect-btn" id="connectBtn">Connect</button>
     </div>
     <div class="gate-error" id="gateError"></div>
     <div class="gate-note">Your key is stored only in your browser's localStorage and sent only to Alpha Vantage.</div>
@@ -253,42 +253,51 @@ const MOCK={
 
 let apiKey='',stockData={},apiCallsToday=0,liveCount=0,fundLive={};
 
+// ── STORAGE HELPERS (fail-safe for private/restricted browsers) ────────────
+function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
+function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
+function lsRemove(k){try{localStorage.removeItem(k);}catch(e){}}
+function ssGet(k){try{return sessionStorage.getItem(k);}catch(e){return null;}}
+function ssSet(k,v){try{sessionStorage.setItem(k,v);}catch(e){}}
+function ssRemove(k){try{sessionStorage.removeItem(k);}catch(e){}}
+
 // ── USAGE TRACKING ─────────────────────────────────────
 function getUsageKey(){return 'av_usage_'+new Date().toISOString().slice(0,10);}
 function recordCall(){
   const k=getUsageKey();
-  apiCallsToday=(parseInt(localStorage.getItem(k)||'0'))+1;
-  localStorage.setItem(k,apiCallsToday);updateRLBar();
+  apiCallsToday=(parseInt(lsGet(k)||'0'))+1;
+  lsSet(k,apiCallsToday);updateRLBar();
 }
-function loadTodayUsage(){apiCallsToday=parseInt(localStorage.getItem(getUsageKey())||'0');updateRLBar();}
+function loadTodayUsage(){apiCallsToday=parseInt(lsGet(getUsageKey())||'0');updateRLBar();}
 function updateRLBar(){
   const pct=Math.min((apiCallsToday/25)*100,100);
   const fill=document.getElementById('rlFill'),txt=document.getElementById('rlText');
   if(fill){fill.style.width=pct+'%';fill.className='rl-fill'+(pct>=90?' danger':pct>=60?' warn':'');}
   if(txt){txt.textContent='API usage today: '+apiCallsToday+' / 25 requests';}
-  // disable fund button if near limit
   const fb=document.getElementById('fundBtn');
   if(fb)fb.disabled=(apiCallsToday+4>25);
 }
 
 // ── CACHE ──────────────────────────────────────────────
 const CACHE_TTL=15*60*1000;
-function saveCache(d){sessionStorage.setItem('av_data',JSON.stringify({ts:Date.now(),d}));}
+function saveCache(d){ssSet('av_data',JSON.stringify({ts:Date.now(),d}));}
 function loadCache(){
-  try{const raw=sessionStorage.getItem('av_data');if(!raw)return null;const o=JSON.parse(raw);if(Date.now()-o.ts>CACHE_TTL)return null;return o.d;}catch{return null;}
+  try{const raw=ssGet('av_data');if(!raw)return null;const o=JSON.parse(raw);if(Date.now()-o.ts>CACHE_TTL)return null;return o.d;}catch(e){return null;}
 }
 
 // ── KEY MANAGEMENT ─────────────────────────────────────
 function connect(){
   const val=document.getElementById('keyInput').value.trim();
   if(!val){const e=document.getElementById('gateError');e.textContent='Please enter your API key.';e.style.display='block';return;}
-  apiKey=val;localStorage.setItem('av_key',val);
+  apiKey=val;
+  // Show dashboard immediately before any storage calls
   document.getElementById('gate').classList.add('hidden');
   document.getElementById('dash').classList.add('visible');
+  lsSet('av_key',val);
   loadAll(false);
 }
 function resetKey(){
-  localStorage.removeItem('av_key');sessionStorage.removeItem('av_data');apiKey='';fundLive={};
+  lsRemove('av_key');ssRemove('av_data');apiKey='';fundLive={};
   document.getElementById('dash').classList.remove('visible');
   document.getElementById('gate').classList.remove('hidden');
   document.getElementById('keyInput').value='';
@@ -588,8 +597,9 @@ function showToast(msg){const t=document.getElementById('toast');t.textContent=m
 
 // ── BOOT ───────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded',()=>{
+  document.getElementById('connectBtn').addEventListener('click',connect);
   document.getElementById('keyInput').addEventListener('keydown',e=>{if(e.key==='Enter')connect();});
-  apiKey=localStorage.getItem('av_key')||'';
+  apiKey=lsGet('av_key')||'';
   if(apiKey){document.getElementById('gate').classList.add('hidden');document.getElementById('dash').classList.add('visible');loadAll(false);}
 });
 </script>
