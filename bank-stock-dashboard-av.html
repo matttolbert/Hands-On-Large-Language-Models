@@ -10,12 +10,16 @@ design-decisions:
   Interactions:
     - Price cards populate one-by-one as DAILY calls complete.
     - "Live Fundamentals" button fetches OVERVIEW for real-time beta/short data (4 extra calls).
+    - "News" button fetches NEWS_SENTIMENT for all 4 tickers (1 call).
     - Sparkline hover crosshair.
     - CET1 mini bar shows position relative to regulatory minimums.
+    - 52-week range bar shows current price relative to annual hi/lo.
+    - Intraday market cap: shares × live price (updates after OVERVIEW loads).
   Colors: --green (safe/gained), --red (risk/fell), --blue (neutral), --amber (caution).
   Data sources:
     - Price/volume/history: Alpha Vantage TIME_SERIES_DAILY (4 calls, live)
-    - Beta/short interest: Alpha Vantage OVERVIEW (4 calls, on-demand)
+    - Beta/short interest/52wk/shares: Alpha Vantage OVERVIEW (4 calls, on-demand)
+    - News: Alpha Vantage NEWS_SENTIMENT (1 call, on-demand)
     - CET1: hardcoded from most recent quarterly regulatory filings (not in AV free tier)
 -->
 <head>
@@ -130,6 +134,7 @@ header{display:flex;justify-content:space-between;align-items:flex-start;flex-wr
 .sg-tag.live{background:var(--green-dim);color:var(--green)}
 .sg-tag.filing{background:var(--blue-dim);color:var(--blue)}
 .sg-tag.loading{background:var(--purple-dim);color:var(--purple)}
+.sg-tag.calc{background:var(--dim2);color:var(--dim)}
 .stat-grid{display:grid;gap:6px}
 .stat-grid.g2{grid-template-columns:1fr 1fr}
 .stat-grid.g3{grid-template-columns:1fr 1fr 1fr}
@@ -153,12 +158,30 @@ header{display:flex;justify-content:space-between;align-items:flex-start;flex-wr
 .cet1-marker{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--border-hi)}
 .cet1-bar-labels{display:flex;justify-content:space-between;font-size:0.55rem;color:var(--dim);font-family:monospace;margin-top:2px}
 
+/* 52-WEEK RANGE BAR */
+.w52-bar-wrap{position:relative;height:5px;background:var(--dim2);border-radius:3px;margin:5px 0 3px;overflow:visible}
+.w52-bar-fill{height:100%;border-radius:3px;background:var(--border-hi)}
+.w52-price-marker{position:absolute;top:-4px;width:3px;height:13px;background:var(--blue);border-radius:2px;transform:translateX(-50%)}
+.w52-bar-labels{display:flex;justify-content:space-between;font-size:0.55rem;color:var(--dim);font-family:monospace;margin-top:2px}
+
 /* NOTE */
 .note{font-size:0.67rem;color:var(--dim);text-align:center;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:7px;line-height:1.5;margin-top:4px}
 
 /* TOAST */
 #toast{position:fixed;bottom:24px;right:24px;background:var(--amber);color:#000;padding:10px 16px;border-radius:8px;font-size:0.78rem;font-weight:600;opacity:0;transform:translateY(8px);transition:all 0.3s;pointer-events:none;max-width:300px;line-height:1.4;z-index:999}
 #toast.show{opacity:1;transform:translateY(0)}
+
+/* NEWS */
+.news-placeholder{font-size:0.72rem;color:var(--dim);font-family:monospace;padding:6px 0}
+.news-item{padding:7px 0;border-bottom:1px solid var(--dim2)}
+.news-item:last-child{border-bottom:none}
+.news-link{color:var(--blue);font-size:0.75rem;text-decoration:none;display:block;line-height:1.4;margin-bottom:3px}
+.news-link:hover{text-decoration:underline}
+.news-meta{font-size:0.62rem;color:var(--dim);font-family:monospace;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.news-sent{font-size:0.58rem;font-family:monospace;padding:1px 5px;border-radius:3px;font-weight:700}
+.news-sent.bull{background:var(--green-dim);color:var(--green)}
+.news-sent.bear{background:var(--red-dim);color:var(--red)}
+.news-sent.neut{background:var(--dim2);color:var(--dim)}
 
 @media(max-width:560px){
   body{padding:14px 14px 32px}
@@ -200,6 +223,7 @@ header{display:flex;justify-content:space-between;align-items:flex-start;flex-wr
       <span class="ts" id="ts">--</span>
       <button class="hdr-btn" onclick="loadAll(true)">&#8635; Refresh</button>
       <button class="hdr-btn accent" id="fundBtn" onclick="loadFundamentals()">&#9670; Live Fundamentals <span id="fundCalls" style="opacity:0.7">(4 calls)</span></button>
+      <button class="hdr-btn" id="newsBtn">&#9432; News <span style="opacity:0.7">(1 call)</span></button>
       <button class="hdr-btn sm" onclick="resetKey()" style="font-size:0.7rem;padding:5px 9px">&#8943; Key</button>
     </div>
   </header>
@@ -230,11 +254,13 @@ const STOCKS=[
 // Static fundamentals.
 // Beta and short interest can be refreshed live via "Live Fundamentals" button (OVERVIEW endpoint).
 // CET1 is from quarterly regulatory filings — not available via Alpha Vantage free tier.
+// wk52hi/wk52lo: approximate annual range values (updated live via OVERVIEW).
+// shares: approximate shares outstanding in millions (updated live via OVERVIEW).
 const FUNDAMENTALS={
-  FITB:{pe:'12.4',div:'3.8%',mcap:'28.4B', beta:'0.91',shortPct:'1.8%',shortRatio:'2.8', cet1:10.6,cet1q:'Q1 2025'},
-  HBAN:{pe:'11.8',div:'4.6%',mcap:'22.1B', beta:'0.89',shortPct:'1.5%',shortRatio:'2.3', cet1:10.3,cet1q:'Q1 2025'},
-  KEY: {pe:'13.1',div:'4.4%',mcap:'17.9B', beta:'1.05',shortPct:'2.1%',shortRatio:'3.1', cet1:10.8,cet1q:'Q1 2025'},
-  PNC: {pe:'14.2',div:'3.3%',mcap:'70.2B', beta:'0.88',shortPct:'1.2%',shortRatio:'2.1', cet1:10.5,cet1q:'Q1 2025'},
+  FITB:{pe:'12.4',div:'3.8%',mcap:'28.4B', beta:'0.91',shortPct:'1.8%',shortRatio:'2.8', cet1:10.6,cet1q:'Q1 2025', wk52hi:46.81,wk52lo:35.24, shares:680e6},
+  HBAN:{pe:'11.8',div:'4.6%',mcap:'22.1B', beta:'0.89',shortPct:'1.5%',shortRatio:'2.3', cet1:10.3,cet1q:'Q1 2025', wk52hi:17.87,wk52lo:13.12, shares:1310e6},
+  KEY: {pe:'13.1',div:'4.4%',mcap:'17.9B', beta:'1.05',shortPct:'2.1%',shortRatio:'3.1', cet1:10.8,cet1q:'Q1 2025', wk52hi:20.45,wk52lo:13.08, shares:975e6},
+  PNC: {pe:'14.2',div:'3.3%',mcap:'70.2B', beta:'0.88',shortPct:'1.2%',shortRatio:'2.1', cet1:10.5,cet1q:'Q1 2025', wk52hi:201.72,wk52lo:157.40, shares:390e6},
 };
 
 // Seeded LCG for fallback mock price history
@@ -252,6 +278,7 @@ const MOCK={
 };
 
 let apiKey='',stockData={},apiCallsToday=0,liveCount=0,fundLive={};
+let newsData={};
 
 // ── STORAGE HELPERS (fail-safe for private/restricted browsers) ────────────
 function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
@@ -276,6 +303,8 @@ function updateRLBar(){
   if(txt){txt.textContent='API usage today: '+apiCallsToday+' / 25 requests';}
   const fb=document.getElementById('fundBtn');
   if(fb)fb.disabled=(apiCallsToday+4>25);
+  const nb=document.getElementById('newsBtn');
+  if(nb)nb.disabled=(apiCallsToday+1>25);
 }
 
 // ── CACHE ──────────────────────────────────────────────
@@ -297,7 +326,7 @@ function connect(){
   loadAll(false);
 }
 function resetKey(){
-  lsRemove('av_key');ssRemove('av_data');apiKey='';fundLive={};
+  lsRemove('av_key');ssRemove('av_data');apiKey='';fundLive={};newsData={};
   document.getElementById('dash').classList.remove('visible');
   document.getElementById('gate').classList.remove('hidden');
   document.getElementById('keyInput').value='';
@@ -321,7 +350,7 @@ async function fetchDaily(ticker){
   return{price,change,pct,vol:fmtVol(parseInt(latest['5. volume'])),hist:closes,lastDate:dates[0]};
 }
 
-// ── FETCH: OVERVIEW (beta + short interest) ────────────
+// ── FETCH: OVERVIEW (beta + short interest + 52wk + shares) ────────────
 async function fetchOverview(ticker){
   const url='https://www.alphavantage.co/query?function=OVERVIEW&symbol='+ticker+'&apikey='+apiKey;
   const r=await fetch(url,{signal:AbortSignal.timeout(12000)});
@@ -334,16 +363,92 @@ async function fetchOverview(ticker){
   const shortRatio=parseFloat(j['ShortRatio']);
   const pe=parseFloat(j['PERatio']);
   const div=parseFloat(j['DividendYield']);
+  const wk52hi=parseFloat(j['52WeekHigh']);
+  const wk52lo=parseFloat(j['52WeekLow']);
+  const sharesRaw=parseFloat(j['SharesOutstanding']);
   return{
     beta:isNaN(beta)?null:beta.toFixed(2),
     shortPct:isNaN(shortPct)?null:(shortPct*100).toFixed(2)+'%',
     shortRatio:isNaN(shortRatio)?null:shortRatio.toFixed(1),
     pe:isNaN(pe)?null:pe.toFixed(1),
     div:isNaN(div)?null:(div*100).toFixed(2)+'%',
+    wk52hi:isNaN(wk52hi)?null:wk52hi,
+    wk52lo:isNaN(wk52lo)?null:wk52lo,
+    shares:isNaN(sharesRaw)?null:sharesRaw,
   };
 }
 
+// ── FETCH: NEWS SENTIMENT (all 4 tickers, 1 call) ──────
+async function fetchNews(){
+  const url='https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=FITB,HBAN,KEY,PNC&sort=LATEST&limit=20&apikey='+apiKey;
+  const r=await fetch(url,{signal:AbortSignal.timeout(15000)});
+  const j=await r.json();recordCall();
+  if(j['Note'])throw new Error('RATE_LIMIT');
+  if(j['Information'])throw new Error('PLAN_LIMIT');
+  const feed=j['feed'];
+  if(!feed||!Array.isArray(feed))throw new Error('NO_DATA');
+
+  // Build per-ticker buckets: up to 3 most relevant articles with score > 0.3
+  const result={FITB:[],HBAN:[],KEY:[],PNC:[]};
+  for(const article of feed){
+    const tickerSentiments=article['ticker_sentiment']||[];
+    for(const ts of tickerSentiments){
+      const sym=ts['ticker'];
+      if(!result[sym])continue;
+      const rel=parseFloat(ts['relevance_score']);
+      if(isNaN(rel)||rel<=0.3)continue;
+      if(result[sym].length>=3)continue;
+      result[sym].push({
+        title:article['title']||'',
+        url:article['url']||'',
+        source:article['source']||'',
+        timePublished:article['time_published']||'',
+        sentimentLabel:ts['ticker_sentiment_label']||'Neutral',
+        relevanceScore:rel,
+      });
+    }
+  }
+  return result;
+}
+
 function fmtVol(v){if(!v||isNaN(v))return'--';if(v>=1e9)return(v/1e9).toFixed(1)+'B';if(v>=1e6)return(v/1e6).toFixed(1)+'M';if(v>=1e3)return(v/1e3).toFixed(0)+'K';return''+v;}
+
+function fmtMcap(v){if(!v||isNaN(v))return'--';if(v>=1e12)return'$'+(v/1e12).toFixed(2)+'T';if(v>=1e9)return'$'+(v/1e9).toFixed(1)+'B';if(v>=1e6)return'$'+(v/1e6).toFixed(1)+'M';return'$'+v.toFixed(0);}
+
+// Parse AV timestamp like "20250525T120000" into relative time
+function fmtNewsTime(t){
+  if(!t||t.length<15)return'';
+  try{
+    const yr=parseInt(t.slice(0,4));
+    const mo=parseInt(t.slice(4,6))-1;
+    const dy=parseInt(t.slice(6,8));
+    const hr=parseInt(t.slice(9,11));
+    const mn=parseInt(t.slice(11,13));
+    const sc=parseInt(t.slice(13,15));
+    const pub=new Date(Date.UTC(yr,mo,dy,hr,mn,sc));
+    const diffMs=Date.now()-pub.getTime();
+    if(diffMs<0)return'just now';
+    const diffMin=Math.floor(diffMs/60000);
+    if(diffMin<60)return diffMin+'m ago';
+    const diffHr=Math.floor(diffMin/60);
+    if(diffHr<24)return diffHr+'h ago';
+    const diffDay=Math.floor(diffHr/24);
+    return diffDay+'d ago';
+  }catch(e){return'';}
+}
+
+// Sanitize HTML entities to prevent XSS from external news content
+function escHtml(s){
+  if(!s)return'';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Only allow http/https URLs
+function safeUrl(u){
+  if(!u)return'#';
+  try{const p=new URL(u);if(p.protocol==='http:'||p.protocol==='https:')return u;}catch(e){}
+  return'#';
+}
 
 // ── LOAD: PRICES ───────────────────────────────────────
 async function loadAll(forceRefresh){
@@ -351,7 +456,7 @@ async function loadAll(forceRefresh){
   if(!forceRefresh){
     const cached=loadCache();
     if(cached){stockData=cached;liveCount=STOCKS.length;render();setStatus('green','Live (cached)');return;}
-  }else{sessionStorage.removeItem('av_data');}
+  }else{ssRemove('av_data');}
 
   if(apiCallsToday+STOCKS.length>25){
     showToast('Near daily limit ('+apiCallsToday+'/25 used). Using simulated data.');
@@ -406,8 +511,12 @@ async function loadFundamentals(){
       if(ov.shortRatio)stockData[s.ticker].shortRatio=ov.shortRatio;
       if(ov.pe)stockData[s.ticker].pe=ov.pe;
       if(ov.div)stockData[s.ticker].div=ov.div;
-      // re-render risk section only
+      if(ov.wk52hi)stockData[s.ticker].wk52hi=ov.wk52hi;
+      if(ov.wk52lo)stockData[s.ticker].wk52lo=ov.wk52lo;
+      if(ov.shares)stockData[s.ticker].shares=ov.shares;
+      // re-render risk section and market section in-place
       updateRiskSection(s.ticker,true);
+      updateMarketSection(s.ticker);
     }catch(e){
       const riskTag2=document.getElementById('risk-tag-'+s.ticker);
       if(riskTag2){riskTag2.className='sg-tag est';riskTag2.textContent='~est';}
@@ -421,6 +530,37 @@ async function loadFundamentals(){
   setStatus('green','All data live');
   renderNote();
   btn.disabled=false;
+}
+
+// ── LOAD: NEWS (on-demand, 1 call for all 4) ───────────
+async function loadNews(){
+  const btn=document.getElementById('newsBtn');
+  if(btn.disabled)return;
+  if(apiCallsToday+1>25){showToast('Not enough daily quota remaining (need 1 call).');return;}
+  btn.disabled=true;
+
+  // Show fetching placeholder in each card's news section
+  STOCKS.forEach(s=>{
+    const el=document.getElementById('news-section-'+s.ticker);
+    if(el)el.innerHTML='<div class="news-placeholder">fetching…</div>';
+  });
+
+  try{
+    const data=await fetchNews();
+    newsData=data;
+    STOCKS.forEach(s=>renderNewsSection(s.ticker));
+  }catch(e){
+    STOCKS.forEach(s=>{
+      const el=document.getElementById('news-section-'+s.ticker);
+      if(el)el.innerHTML='<div class="news-placeholder" style="color:var(--red)">Error loading news.</div>';
+    });
+    if(e.message==='RATE_LIMIT'){showToast('Rate limit hit fetching news. Try again in 1 min.');}
+    else if(e.message==='PLAN_LIMIT'){showToast('Daily limit reached. Resets at midnight ET.');}
+    else{showToast('Failed to load news. Check your API key.');}
+  }
+
+  updateRLBar();
+  btn.disabled=(apiCallsToday+1>25);
 }
 
 // ── RENDER ─────────────────────────────────────────────
@@ -466,9 +606,73 @@ function cardTop(s,d,pos){
     '<div class="chip '+(pos?'pos':'neg')+'">'+(pos?'&#9650;':'&#9660;')+' '+Math.abs(d.pct).toFixed(2)+'%</div>'+
   '</div>';
 }
+
+// Build the 52-week range bar HTML
+function w52BarHtml(ticker,d){
+  const hi=parseFloat(d.wk52hi),lo=parseFloat(d.wk52lo),price=d.price;
+  if(isNaN(hi)||isNaN(lo)||!price)return'<div style="font-size:0.7rem;color:var(--dim);font-family:monospace">--</div>';
+  const rng=hi-lo||1;
+  const posPct=Math.min(Math.max(((price-lo)/rng)*100,0),100);
+  return '<div class="w52-bar-wrap" id="w52-wrap-'+ticker+'">'+
+    '<div class="w52-bar-fill" style="width:100%"></div>'+
+    '<div class="w52-price-marker" style="left:'+posPct+'%"></div>'+
+  '</div>'+
+  '<div class="w52-bar-labels"><span>$'+lo.toFixed(2)+'</span><span>$'+hi.toFixed(2)+'</span></div>';
+}
+
+// Calculate and format intraday market cap
+function mcapHtml(ticker,d){
+  const shares=parseFloat(d.shares),price=d.price;
+  const hasLiveShares=fundLive[ticker]&&fundLive[ticker].shares;
+  if(!isNaN(shares)&&price){
+    const mcapVal=shares*price;
+    const tag=hasLiveShares?'live':'~calc';
+    const tagCls=hasLiveShares?'live':'calc';
+    return '<span id="mcap-val-'+ticker+'">'+fmtMcap(mcapVal)+'</span>'+
+           '<span class="sg-tag '+tagCls+'" id="mkt-tag-'+ticker+'" style="margin-left:4px;font-size:0.55rem">'+tag+'</span>';
+  }
+  return '<span id="mcap-val-'+ticker+'">'+(d.mcap?'$'+d.mcap:'--')+'</span>'+
+         '<span id="mkt-tag-'+ticker+'"></span>';
+}
+
+// Update market section in-place after OVERVIEW loads
+function updateMarketSection(ticker){
+  const d=stockData[ticker];
+  // Update market cap display
+  const mcapValEl=document.getElementById('mcap-val-'+ticker);
+  const mktTagEl=document.getElementById('mkt-tag-'+ticker);
+  const shares=parseFloat(d.shares),price=d.price;
+  if(mcapValEl&&!isNaN(shares)&&price){
+    const mcapVal=shares*price;
+    mcapValEl.textContent=fmtMcap(mcapVal);
+  }
+  if(mktTagEl){
+    mktTagEl.className='sg-tag live';
+    mktTagEl.style.marginLeft='4px';
+    mktTagEl.style.fontSize='0.55rem';
+    mktTagEl.textContent='live';
+  }
+  // Update 52-week range bar
+  const w52El=document.getElementById('w52-wrap-'+ticker);
+  if(w52El){
+    const hi=parseFloat(d.wk52hi),lo=parseFloat(d.wk52lo);
+    if(!isNaN(hi)&&!isNaN(lo)&&price){
+      const rng=hi-lo||1;
+      const posPct=Math.min(Math.max(((price-lo)/rng)*100,0),100);
+      w52El.innerHTML='<div class="w52-bar-fill" style="width:100%"></div>'+
+        '<div class="w52-price-marker" style="left:'+posPct+'%"></div>';
+      // Update labels too (they're the next sibling)
+      const labelsEl=w52El.nextElementSibling;
+      if(labelsEl&&labelsEl.classList.contains('w52-bar-labels')){
+        labelsEl.innerHTML='<span>$'+lo.toFixed(2)+'</span><span>$'+hi.toFixed(2)+'</span>';
+      }
+    }
+  }
+}
+
 function cardStats(ticker,d,fundIsLive){
   const b=parseFloat(d.beta);
-  const betaClass=isNaN(b)?'neu':(b>1.1?'md':b<0.8?'hi':'neu');
+  const betaClass=isNaN(b)?'neu':(b>1?'md':b<0.8?'hi':'neu');
   const sp=parseFloat(d.shortPct);
   const shortClass=isNaN(sp)?'neu':(sp>3?'lo':sp>1.5?'md':'hi');
   const shortBadge=isNaN(sp)?'':('<span class="badge '+(sp>3?'high':sp>1.5?'mod':'low')+'">'+(sp>3?'HIGH':sp>1.5?'MOD':'LOW')+'</span>');
@@ -477,18 +681,27 @@ function cardStats(ticker,d,fundIsLive){
   const min45Pct=(4.5/15)*100;   // Basel III minimum marker
   const wellPct=(10/15)*100;     // "well-capitalized" marker
 
+  // News section: show articles if already loaded, else placeholder
+  const newsHtml=newsData[ticker]&&newsData[ticker].length>0
+    ?renderNewsHtml(ticker)
+    :'<div class="news-placeholder">Click \'News\' above to load</div>';
+
   return '<div class="stat-groups">'+
     // MARKET DATA
     '<div class="stat-group">'+
       '<div class="sg-hdr"><span class="sg-title">Market Data</span><span class="sg-tag filing">end-of-day</span></div>'+
       '<div class="stat-grid g3">'+
         '<div class="stat"><label>Volume</label><span>'+d.vol+'</span></div>'+
-        '<div class="stat"><label>Mkt Cap</label><span>$'+(d.mcap||'--')+'</span></div>'+
+        '<div class="stat"><label>Mkt Cap</label><span style="display:inline-flex;align-items:center;gap:2px">'+mcapHtml(ticker,d)+'</span></div>'+
         '<div class="stat"><label>P/E</label><span>'+(d.pe||'--')+'</span></div>'+
       '</div>'+
       '<div class="stat-grid g2" style="margin-top:5px">'+
         '<div class="stat"><label>Div Yield</label><span>'+(d.div||'--')+'</span></div>'+
         (d.lastDate?'<div class="stat"><label>As Of</label><span style="font-size:0.72rem">'+d.lastDate+'</span></div>':'')+
+      '</div>'+
+      '<div style="margin-top:7px">'+
+        '<div style="font-size:0.59rem;color:var(--dim);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px">52-Wk Range</div>'+
+        w52BarHtml(ticker,d)+
       '</div>'+
     '</div>'+
     // SHORT ACTIVITY
@@ -515,6 +728,11 @@ function cardStats(ticker,d,fundIsLive){
       '</div>'+
       '<div class="cet1-bar-labels"><span>0%</span><span>Min 4.5%</span><span>Well-cap 10%</span><span>15%</span></div>'+
     '</div>'+
+    // LATEST NEWS
+    '<div class="stat-group">'+
+      '<div class="sg-hdr"><span class="sg-title">Latest News</span></div>'+
+      '<div id="news-section-'+ticker+'">'+newsHtml+'</div>'+
+    '</div>'+
   '</div>';
 }
 
@@ -522,7 +740,7 @@ function cardStats(ticker,d,fundIsLive){
 function updateRiskSection(ticker,isLive){
   const d=stockData[ticker];
   const b=parseFloat(d.beta);
-  const betaClass=isNaN(b)?'neu':(b>1.1?'md':b<0.8?'hi':'neu');
+  const betaClass=isNaN(b)?'neu':(b>1?'md':b<0.8?'hi':'neu');
   const sp=parseFloat(d.shortPct);
   const shortClass=isNaN(sp)?'neu':(sp>3?'lo':sp>1.5?'md':'hi');
   const shortBadge=isNaN(sp)?'':('<span class="badge '+(sp>3?'high':sp>1.5?'mod':'low')+'">'+(sp>3?'HIGH':sp>1.5?'MOD':'LOW')+'</span>');
@@ -539,6 +757,37 @@ function updateRiskSection(ticker,isLive){
   }
   const riskTag=document.getElementById('risk-tag-'+ticker);
   if(riskTag){riskTag.className='sg-tag live';riskTag.textContent='live';}
+}
+
+// Build news HTML string for a ticker (assumes newsData[ticker] is populated)
+function renderNewsHtml(ticker){
+  const articles=newsData[ticker];
+  if(!articles||articles.length===0){
+    return '<div class="news-placeholder">No relevant articles found.</div>';
+  }
+  return articles.map(a=>{
+    const sentLower=(a.sentimentLabel||'Neutral').toLowerCase();
+    let sentCls='neut',sentTxt='Neutral';
+    if(sentLower.includes('bull')){sentCls='bull';sentTxt='Bullish';}
+    else if(sentLower.includes('bear')){sentCls='bear';sentTxt='Bearish';}
+    const t=fmtNewsTime(a.timePublished);
+    const u=safeUrl(a.url);
+    return '<div class="news-item">'+
+      '<a class="news-link" href="'+u+'" target="_blank" rel="noopener noreferrer">'+escHtml(a.title)+'</a>'+
+      '<div class="news-meta">'+
+        '<span>'+escHtml(a.source)+'</span>'+
+        (t?'<span>'+t+'</span>':'')+
+        '<span class="news-sent '+sentCls+'">'+sentTxt+'</span>'+
+      '</div>'+
+    '</div>';
+  }).join('');
+}
+
+// Render news section in the DOM for a given ticker
+function renderNewsSection(ticker){
+  const el=document.getElementById('news-section-'+ticker);
+  if(!el)return;
+  el.innerHTML=renderNewsHtml(ticker);
 }
 
 // ── SPARKLINE ──────────────────────────────────────────
@@ -599,6 +848,7 @@ function showToast(msg){const t=document.getElementById('toast');t.textContent=m
 window.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('connectBtn').addEventListener('click',connect);
   document.getElementById('keyInput').addEventListener('keydown',e=>{if(e.key==='Enter')connect();});
+  document.getElementById('newsBtn').addEventListener('click',loadNews);
   apiKey=lsGet('av_key')||'';
   if(apiKey){document.getElementById('gate').classList.add('hidden');document.getElementById('dash').classList.add('visible');loadAll(false);}
 });
